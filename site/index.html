@@ -4,323 +4,783 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Riposte, fencing video tracking</title>
-<meta name="description" content="Track two fencers through competition video. Person-detection-gated tracking, momentum through crossings, body landmarks, and honest reporting when it loses them.">
+<meta name="description" content="Follow both fencers through a bout automatically. Riposte writes an annotated clip and a spreadsheet of positions and speeds, and says when it has lost one instead of quietly following the wrong person.">
+<meta name="theme-color" content="#12151a">
+<meta property="og:type" content="website">
 <meta property="og:title" content="Riposte, fencing video tracking">
-<meta property="og:description" content="Track two fencers through competition video, measured against footage from four competitions.">
-<meta property="og:image" content="demo.gif">
+<meta property="og:description" content="Follow both fencers through a bout automatically. It tells you when it has lost one instead of quietly following the wrong person.">
+<meta property="og:image" content="tracking.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<script>
+// Arm the scroll reveals only when this browser can actually finish
+// them. Everything is visible by default in the CSS, so a crawler, a
+// hidden tab, a headless renderer or a reader with JS off gets the
+// whole page rather than a blank one below the hero.
+(function () {
+  try {
+    if (!('IntersectionObserver' in window)) return;
+    if (!window.matchMedia('(prefers-reduced-motion: no-preference)').matches) return;
+    document.documentElement.classList.add('js-reveal');
+  } catch (e) { /* leave everything visible */ }
+})();
+</script>
 <style>
+/* ------------------------------------------------------------------
+   Riposte
+
+   The palette is not a design choice, it is the tracker's own
+   semantics. Orange is Fencer A, blue is Fencer B, red is LOST. Every
+   annotated frame this program has written uses those three, so the
+   page and the output speak one language. Red is never decorative
+   here, because on this page red means a real failure.
+   ------------------------------------------------------------------ */
 :root{
-  --bg:#0f1116; --panel:#171a21; --line:#252a34; --ink:#e8eaef;
-  --dim:#9aa2b1; --accent:#ff8c3c; --blue:#5b9bff; --ok:#42c07a; --bad:#ff6b6b;
+  color-scheme: dark;
+
+  --bg:      oklch(0.155 0.008 260);
+  --bg-deep: oklch(0.115 0.008 260);
+  --surface: oklch(0.205 0.010 260);
+  --raised:  oklch(0.245 0.011 260);
+  --line:    oklch(0.290 0.012 260);
+  --ink:     oklch(0.965 0.004 260);
+  --muted:   oklch(0.755 0.012 260);
+
+  --a:    oklch(0.760 0.170 55);
+  --b:    oklch(0.720 0.140 250);
+  --lost: oklch(0.680 0.200 25);
+  --ok:   oklch(0.780 0.150 155);
+
+  --sans: "Archivo", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --step-0: clamp(1rem, 0.96rem + 0.20vw, 1.125rem);
+  --step-1: clamp(1.20rem, 1.10rem + 0.45vw, 1.50rem);
+  --step-2: clamp(1.55rem, 1.35rem + 0.95vw, 2.20rem);
+  --step-3: clamp(2.00rem, 1.60rem + 1.90vw, 3.20rem);
+  --step-4: clamp(2.75rem, 1.90rem + 4.20vw, 5.50rem);
+
+  --gutter: clamp(1.25rem, 5vw, 3rem);
+  --gap-s: clamp(1.5rem, 3vw, 2.5rem);
+  --gap-m: clamp(3rem, 7vw, 6rem);
+  --gap-l: clamp(5rem, 11vw, 9.5rem);
+
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --z-sticky: 100;
+  --z-skip: 200;
 }
-*{box-sizing:border-box}
-html{scroll-behavior:smooth}
+
+*,*::before,*::after{ box-sizing: border-box; }
+html{ scroll-behavior: smooth; -webkit-text-size-adjust: 100%; overflow-x: clip; }
 body{
-  margin:0; background:var(--bg); color:var(--ink);
-  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  -webkit-font-smoothing:antialiased;
+  margin:0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  line-height: 1.68;
+  font-variation-settings: "wdth" 100, "wght" 420;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
-.wrap{max-width:880px;margin:0 auto;padding:0 24px}
-a{color:var(--blue)}
-a:hover{color:#8bb8ff}
+img{ max-width:100%; height:auto; display:block; }
 
-header{padding:76px 0 44px;border-bottom:1px solid var(--line)}
-h1{margin:0;font-size:44px;line-height:1.1;letter-spacing:-0.02em;font-weight:700}
-h1 .dot{color:var(--accent)}
-.tag{margin:14px 0 0;font-size:19px;color:var(--dim);max-width:620px}
-.by{margin:22px 0 0;font-size:14px;color:var(--dim)}
+h1,h2,h3,h4{
+  line-height: 1.08;
+  margin: 0;
+  text-wrap: balance;
+  font-variation-settings: "wdth" 108, "wght" 700;
+  letter-spacing: -0.032em;
+}
+p{ margin: 0 0 1.05em; text-wrap: pretty; }
+p:last-child{ margin-bottom: 0; }
+a{ color: var(--a); text-underline-offset: 0.22em; text-decoration-thickness: 1px; }
+a:hover{ color: var(--ink); }
+:focus-visible{ outline: 2px solid var(--a); outline-offset: 3px; border-radius: 2px; }
 
-.figure{margin:36px 0 0}
-.figure img{width:100%;border-radius:10px;border:1px solid var(--line);display:block}
-.cap{margin:10px 0 0;font-size:13px;color:var(--dim)}
+.wrap{ width: min(100% - var(--gutter)*2, 74rem); margin-inline: auto; }
+.prose{ max-width: 63ch; }
 
-.cta{display:flex;gap:12px;flex-wrap:wrap;margin:30px 0 0}
+.skip{
+  position:absolute; left:var(--gutter); top:-4rem; z-index: var(--z-skip);
+  background: var(--a); color:#141109; padding:.7rem 1.1rem; border-radius:6px;
+  font-weight:700; text-decoration:none; transition: top .18s var(--ease);
+}
+.skip:focus{ top: 1rem; }
+
+/* --- sticky bar, appears once the hero is behind you --------------- */
+.bar{
+  position: fixed; inset: 0 0 auto 0; z-index: var(--z-sticky);
+  display:flex; align-items:center; gap:1.5rem;
+  padding:.75rem var(--gutter);
+  background: oklch(0.155 0.008 260 / 0.88);
+  backdrop-filter: blur(14px);
+  border-bottom:1px solid transparent;
+  transform: translateY(-101%);
+  transition: transform .45s var(--ease), border-color .45s var(--ease);
+}
+.bar[data-shown="true"]{ transform:none; border-bottom-color: var(--line); }
+.bar__name{ font-variation-settings:"wdth" 112,"wght" 800; letter-spacing:-.04em; font-size:1.05rem; }
+.bar__name span{ color: var(--a); }
+.bar nav{ display:none; gap:1.4rem; margin-left:auto; }
+.bar nav a{ color: var(--muted); text-decoration:none; font-size:.92rem; font-weight:600; }
+.bar nav a:hover{ color: var(--ink); }
+.bar > .btn{ margin-left:auto; padding:.45rem .95rem; font-size:.9rem; }
+/* The nav is hidden on narrow screens, so the button only gives up its
+   auto margin once the nav is actually there to push it right. */
+@media (min-width: 62rem){ .bar nav{ display:flex; } .bar nav ~ .btn{ margin-left:0; } }
+
+/* --- hero ---------------------------------------------------------- */
+.hero{ padding: clamp(5rem, 12vh, 9rem) 0 0; position: relative; }
+.hero::before{
+  content:""; position:absolute; inset:-30% 0 45% 0; z-index:-1;
+  background: radial-gradient(58% 52% at 20% 28%, oklch(0.760 0.170 55 / 0.12), transparent 70%);
+  pointer-events:none;
+}
+.wordmark{
+  font-size: var(--step-4);
+  font-variation-settings:"wdth" 118,"wght" 800;
+  letter-spacing:-.045em; line-height:.92;
+}
+.wordmark span{ color: var(--a); }
+.lede{
+  font-size: var(--step-1); max-width: 34ch;
+  margin: clamp(1.1rem, 2.5vw, 1.8rem) 0 0;
+  font-variation-settings:"wdth" 100,"wght" 480; line-height:1.34;
+}
+.sub{ color: var(--muted); max-width: 56ch; margin-top:1.1rem; }
+.sub b{ color: var(--ink); font-variation-settings:"wdth" 100,"wght" 650; }
+
+/* Action slot. When the Mac app ships, "Download for Mac" becomes the
+   primary here and the GitHub link steps down. Same component, same
+   position, no redesign needed. */
+.actions{ display:flex; flex-wrap:wrap; gap:.7rem; margin-top: clamp(1.6rem,3vw,2.4rem); }
 .btn{
-  display:inline-block;padding:11px 18px;border-radius:8px;text-decoration:none;
-  font-size:15px;font-weight:600;border:1px solid var(--line);color:var(--ink);
-  background:var(--panel);
+  display:inline-flex; align-items:center; gap:.55rem;
+  padding:.78rem 1.35rem; border-radius:8px;
+  font-weight:700; font-size:.98rem; text-decoration:none;
+  border:1px solid var(--line); color: var(--ink); background: var(--surface);
+  transition: background .2s var(--ease), border-color .2s var(--ease), transform .2s var(--ease);
 }
-.btn:hover{background:#1f232c;color:var(--ink)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#2a1400}
-.btn.primary:hover{background:#ff9f5c;color:#2a1400}
+.btn:hover{ background: var(--raised); border-color: oklch(0.40 0.02 260); color: var(--ink); transform: translateY(-1px); }
+.btn--primary{ background: var(--a); color:#141109; border-color: var(--a); }
+.btn--primary:hover{ background: oklch(0.82 0.165 58); border-color: oklch(0.82 0.165 58); color:#141109; }
+.btn small{ font-weight:500; opacity:.72; font-family:var(--mono); font-size:.78rem; }
 
-section{padding:52px 0;border-bottom:1px solid var(--line)}
-h2{font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);
-   margin:0 0 20px;font-weight:600}
-h3{font-size:20px;margin:32px 0 10px;font-weight:600}
-p{margin:0 0 16px;max-width:680px}
-ul{margin:0 0 16px;padding-left:20px;max-width:680px}
-li{margin:0 0 7px}
+.hero__figure{ margin-top: clamp(2.5rem, 6vw, 4.5rem); }
+figure{ margin:0; }
+.shot{
+  border:1px solid var(--line); border-radius:12px; overflow:hidden;
+  background: var(--bg-deep);
+  box-shadow: 0 30px 70px -40px rgb(0 0 0 / .9);
+}
+figcaption{ margin-top:.95rem; color: var(--muted); font-size:.95rem; max-width:68ch; }
+figcaption b{ color: var(--ink); font-variation-settings:"wdth" 100,"wght" 620; }
+.key-a{ color: var(--a); font-weight:700; }
+.key-b{ color: var(--b); font-weight:700; }
+.key-lost{ color: var(--lost); font-weight:700; }
 
-table{border-collapse:collapse;width:100%;font-size:14.5px;margin:0 0 18px}
-th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);
-      vertical-align:top}
-th{color:var(--dim);font-weight:600;font-size:12.5px;text-transform:uppercase;
-   letter-spacing:.06em}
-td code{font-size:13px}
-.bad{color:var(--bad)}
-.ok{color:var(--ok)}
+/* --- sections ------------------------------------------------------ */
+section{ padding-block: var(--gap-l); }
+section + section{ padding-top: 0; }
+h2{ font-size: var(--step-3); max-width: 20ch; }
+h3{ font-size: var(--step-2); }
+h4{ font-size: var(--step-1); }
+.section__intro{ margin-top: clamp(1.1rem,2.2vw,1.6rem); color: var(--muted); }
+.section__intro strong{ color: var(--ink); font-variation-settings:"wdth" 100,"wght" 620; }
 
-code{background:#0b0d12;border:1px solid var(--line);border-radius:4px;
-     padding:1px 5px;font-size:14px;
-     font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-pre{background:#0b0d12;border:1px solid var(--line);border-radius:8px;
-    padding:15px 17px;overflow-x:auto;font-size:14px;margin:0 0 18px}
-pre code{background:none;border:none;padding:0}
+/* --- what you get -------------------------------------------------- */
+.flow{
+  margin-top: var(--gap-s); display:grid; gap:1px; background: var(--line);
+  border:1px solid var(--line); border-radius:12px; overflow:hidden;
+}
+@media (min-width: 52rem){ .flow{ grid-template-columns: repeat(4, 1fr); } }
+.flow > div{ background: var(--bg); padding:1.5rem 1.4rem; }
+.flow dt{ font-family: var(--mono); font-size:.78rem; color: var(--a); letter-spacing:.06em; margin-bottom:.7rem; }
+.flow h4{ font-size:1.12rem; margin-bottom:.5rem; font-variation-settings:"wdth" 104,"wght" 680; }
+.flow p{ color: var(--muted); font-size:.96rem; margin:0; }
 
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:17px}
-.card h4{margin:0 0 7px;font-size:15px;font-weight:600}
-.card p{margin:0;font-size:14px;color:var(--dim)}
+/* --- the honest bit ------------------------------------------------ */
+.lost-panel{ margin-top: var(--gap-s); display:grid; gap: clamp(1.5rem,4vw,3rem); align-items:center; }
+@media (min-width: 62rem){ .lost-panel{ grid-template-columns: 1.15fr .85fr; } }
+.lost-panel .shot{ border-color: oklch(0.680 0.200 25 / .45); }
+.callout{ border:1px solid var(--line); border-radius:12px; padding: clamp(1.3rem,3vw,1.9rem); background: var(--surface); }
+.callout h3{ margin:0 0 .7rem; font-size: var(--step-1); }
+.callout p{ color: var(--muted); }
 
-.stat{font-size:30px;font-weight:700;letter-spacing:-0.01em}
-.stat.a{color:var(--accent)} .stat.g{color:var(--ok)}
-.stat-label{font-size:13px;color:var(--dim);margin-top:2px}
+/* --- tables -------------------------------------------------------- */
+.tablewrap{ overflow-x:auto; margin-top: var(--gap-s); border:1px solid var(--line); border-radius:12px; }
+table{ border-collapse: collapse; width:100%; min-width:34rem; font-size:.96rem; }
+caption{ text-align:left; padding:1rem 1.1rem 0; color: var(--muted); font-size:.9rem; }
+th,td{ padding:.85rem 1.1rem; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+thead th{
+  font-family: var(--mono); font-size:.76rem; letter-spacing:.06em;
+  color: var(--muted); text-transform:uppercase; font-weight:600; background: var(--surface);
+}
+tbody tr:last-child td{ border-bottom:none; }
+tbody tr:hover{ background: oklch(0.205 0.010 260 / .55); }
+td.num{ font-family: var(--mono); white-space:nowrap; }
+.bad{ color: var(--lost); }
+.ok{ color: var(--ok); }
+.who{ font-family: var(--mono); font-size:.86rem; white-space:nowrap; }
 
-footer{padding:40px 0 64px;color:var(--dim);font-size:14px}
-footer a{color:var(--dim);text-decoration:underline}
+/* --- pipeline. Deliberately not five equal cards: these are steps of
+       different weight, and a grid of identical boxes would flatten
+       that into a feature list. ------------------------------------- */
+.pipeline{ margin-top: var(--gap-s); display:grid; }
+.pipeline > div{ padding:1.6rem 0; border-top:1px solid var(--line); display:grid; gap:.35rem 2rem; }
+.pipeline > div:last-child{ border-bottom:1px solid var(--line); }
+@media (min-width: 54rem){ .pipeline > div{ grid-template-columns: 15rem 1fr; align-items:start; } }
+.pipeline h4{ font-size:1.15rem; font-variation-settings:"wdth" 104,"wght" 700; }
+.pipeline p{ color: var(--muted); margin:0; max-width:62ch; }
+.pipeline .lead h4{ font-size: var(--step-2); color: var(--a); }
 
-@media (max-width:600px){
-  header{padding:48px 0 32px}
-  h1{font-size:32px}
-  .tag{font-size:17px}
-  table{font-size:13px}
-  th,td{padding:7px 8px}
+/* --- steps. A real sequence, so the numbers carry information. ------ */
+.steps{
+  margin-top: var(--gap-s); counter-reset:s; display:grid; gap:1px; padding:0; margin-bottom:0;
+  background: var(--line); border:1px solid var(--line); border-radius:12px; overflow:hidden;
+}
+@media (min-width: 48rem){ .steps{ grid-template-columns: repeat(2, 1fr); } }
+.steps > li{ background: var(--bg); padding:1.6rem 1.5rem; list-style:none; counter-increment:s; }
+.steps > li::before{
+  content: counter(s, decimal-leading-zero);
+  font-family: var(--mono); font-size:.8rem; color: var(--a); display:block; margin-bottom:.6rem;
+}
+.steps h4{ font-size:1.1rem; margin-bottom:.45rem; font-variation-settings:"wdth" 104,"wght" 680; }
+.steps p{ color: var(--muted); font-size:.96rem; margin:0; }
+.steps b{ color: var(--ink); }
+
+/* --- code ---------------------------------------------------------- */
+pre{
+  margin:1.2rem 0 0; padding:1.15rem 1.25rem; overflow-x:auto;
+  background: var(--bg-deep); border:1px solid var(--line); border-radius:10px;
+}
+code{ font-family: var(--mono); font-size:.88rem; }
+pre code{ color: oklch(0.90 0.02 150); line-height:1.75; }
+p > code, li > code{
+  background: var(--surface); border:1px solid var(--line);
+  padding:.1em .4em; border-radius:4px; font-size:.86em; color: var(--ink);
+}
+
+/* --- disclosure for the deep engineering --------------------------- */
+details{ border:1px solid var(--line); border-radius:12px; margin-top:1rem; background: var(--surface); }
+details[open]{ background: var(--bg); }
+summary{
+  cursor:pointer; padding:1.05rem 1.3rem; font-variation-settings:"wdth" 102,"wght" 660;
+  display:flex; align-items:center; gap:.7rem; list-style:none;
+}
+summary::-webkit-details-marker{ display:none; }
+summary::before{
+  content:"+"; font-family: var(--mono); color: var(--a); font-size:1.1rem; line-height:1;
+  transition: transform .25s var(--ease);
+}
+details[open] summary::before{ transform: rotate(45deg); }
+summary:hover{ color: var(--a); }
+.details__body{ padding:0 1.3rem 1.4rem; }
+.details__body > :first-child{ margin-top:0; }
+
+/* --- limits -------------------------------------------------------- */
+.limits{
+  margin-top: var(--gap-s); padding:0; list-style:none; display:grid; gap:1px;
+  background: var(--line); border:1px solid var(--line); border-radius:12px; overflow:hidden;
+}
+.limits li{ background: var(--bg); padding:1.2rem 1.4rem; color: var(--muted); }
+.limits b{ color: var(--ink); font-variation-settings:"wdth" 100,"wght" 640; display:block; margin-bottom:.2rem; }
+
+/* --- roadmap. Everything here is explicitly not built yet. ---------- */
+.roadmap{
+  margin-top: var(--gap-s); display:grid; gap:1px; background: var(--line);
+  border:1px solid var(--line); border-radius:12px; overflow:hidden;
+}
+.roadmap > div{ background: var(--bg); padding:1.4rem 1.5rem; display:grid; gap:.4rem .9rem; }
+@media (min-width: 48rem){ .roadmap > div{ grid-template-columns: 7.5rem 1fr; align-items:baseline; } }
+.tag{
+  font-family: var(--mono); font-size:.72rem; letter-spacing:.05em; text-transform:uppercase;
+  color: var(--muted); border:1px solid var(--line); border-radius:99px;
+  padding:.2rem .6rem; justify-self:start; white-space:nowrap;
+}
+.tag--now{ color: var(--ok); border-color: oklch(0.780 0.150 155 / .4); }
+.roadmap h4{ font-size:1.06rem; font-variation-settings:"wdth" 102,"wght" 670; }
+.roadmap p{ color: var(--muted); font-size:.95rem; margin:.2rem 0 0; grid-column: 1 / -1; }
+@media (min-width: 48rem){ .roadmap p{ grid-column: 2; } }
+
+footer{ border-top:1px solid var(--line); padding-block: var(--gap-m); color: var(--muted); }
+footer p{ max-width:60ch; }
+
+/* --- motion. Content is visible by default and the reveal enhances
+       it, so a hidden tab or a headless renderer still ships the whole
+       page rather than a blank one. --------------------------------- */
+@media (prefers-reduced-motion: no-preference){
+  .js-reveal .rise{ opacity:0; transform: translateY(18px); }
+  .js-reveal .rise.seen{ opacity:1; transform:none;
+    transition: opacity .7s var(--ease), transform .7s var(--ease); }
+  .js-reveal .stagger tbody tr{ opacity:0; }
+  .js-reveal .stagger.seen tbody tr{ opacity:1; transition: opacity .5s var(--ease); }
+  .js-reveal .stagger.seen tbody tr:nth-child(1){ transition-delay:.05s }
+  .js-reveal .stagger.seen tbody tr:nth-child(2){ transition-delay:.11s }
+  .js-reveal .stagger.seen tbody tr:nth-child(3){ transition-delay:.17s }
+  .js-reveal .stagger.seen tbody tr:nth-child(4){ transition-delay:.23s }
+  .js-reveal .stagger.seen tbody tr:nth-child(5){ transition-delay:.29s }
+  .js-reveal .hero .wordmark, .js-reveal .hero .lede, .js-reveal .hero .sub,
+  .js-reveal .hero .actions, .js-reveal .hero__figure{
+    animation: enter .9s var(--ease) both;
+  }
+  .js-reveal .hero .lede{ animation-delay:.08s }
+  .js-reveal .hero .sub{ animation-delay:.14s }
+  .js-reveal .hero .actions{ animation-delay:.2s }
+  .js-reveal .hero__figure{ animation-delay:.28s }
+  @keyframes enter{ from{ opacity:0; transform: translateY(22px) } to{ opacity:1; transform:none } }
 }
 </style>
 </head>
 <body>
 
-<header>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="bar" id="bar" data-shown="false">
+  <span class="bar__name">Riposte<span>.</span></span>
+  <nav aria-label="Sections">
+    <a href="#how">How it works</a>
+    <a href="#evidence">Evidence</a>
+    <a href="#filming">Filming</a>
+    <a href="#run">Run it</a>
+  </nav>
+  <a class="btn btn--primary" href="https://github.com/matthewyongenwang-coder/riposte">Get it on GitHub</a>
+</div>
+
+<header class="hero">
   <div class="wrap">
-    <h1 id="name">Riposte<span class="dot">.</span></h1>
-    <p class="tag">Track two fencers through competition video. Pick them once,
-       and it follows them, writes out an annotated clip and a CSV of positions
-       and speeds, and tells you when it has lost them.</p>
-    <p class="by">An open source computer vision project by Matthew Wang.
-       Python and OpenCV.</p>
+    <h1 class="wordmark">Riposte<span>.</span></h1>
+    <p class="lede">Follow both fencers through a bout, automatically.</p>
+    <p class="sub">Pick the two fencers once on the first frame. Riposte follows
+      them through the phrase, writes an annotated clip and a spreadsheet of
+      positions and speeds, and <b>tells you when it has lost one</b> instead of
+      quietly following the wrong person.</p>
 
-    <div class="figure">
-      <img src="demo.gif" alt="Two fencers tracked through a bout with labelled boxes and body landmarks">
-      <p class="cap">A real bout from a Portland C2 competition. Orange and blue
-         boxes hold each fencer's identity, the stick figures are body landmarks,
-         red marks the sword hand and yellow marks the feet.</p>
+    <div class="actions">
+      <a class="btn btn--primary" href="https://github.com/matthewyongenwang-coder/riposte">Get it on GitHub</a>
+      <a class="btn" href="#run">Run it on your own footage</a>
+      <a class="btn" href="https://github.com/matthewyongenwang-coder/riposte/blob/main/FILMING.md">How to film for it <small>read first</small></a>
     </div>
 
-    <div class="cta">
-      <a class="btn primary" href="https://github.com/matthewyongenwang-coder/riposte">Source on GitHub</a>
-      <a class="btn" href="https://github.com/matthewyongenwang-coder/riposte/blob/main/FILMING.md">How to film for it</a>
-      <a class="btn" href="#results">What it gets right and wrong</a>
-    </div>
+    <figure class="hero__figure">
+      <div class="shot">
+        <img src="tracking.jpg" width="1600" height="900" fetchpriority="high"
+             alt="A bout at a Portland competition. Two fencers are outlined, one in orange and one in blue, with body landmarks drawn over them, in a hall holding more than a dozen other fencers in identical white kit.">
+      </div>
+      <figcaption>A Portland C2 bout. <span class="key-a">Orange</span> is Fencer A
+        and <span class="key-b">blue</span> is Fencer B, the stick figures are body
+        landmarks, red marks the sword hand and yellow the feet. <b>Count the other
+        fencers in the hall.</b> They are all wearing the same white kit, and
+        holding on to the right two is the actual problem.</figcaption>
+    </figure>
   </div>
 </header>
 
-<section>
+<main id="main">
+
+<section id="what">
   <div class="wrap">
-    <h2>Why I built it</h2>
-    <p>I fence sabre and I film a lot of my bouts. I wanted something that could
-       follow both fencers automatically so I could pull numbers out of the
-       footage instead of scrubbing through it by hand.</p>
-    <p>The hard part turned out not to be following a fencer. It was knowing when
-       the tracker had stopped following the right one.</p>
+    <h2 class="rise">What you get from one clip</h2>
+    <dl class="flow rise">
+      <div>
+        <dt>MP4</dt>
+        <h4>An annotated video</h4>
+        <p>Every frame with both boxes, the movement label, the body landmarks and
+          the camera readout drawn on.</p>
+      </div>
+      <div>
+        <dt>CSV</dt>
+        <h4>A spreadsheet</h4>
+        <p>Position, speed and direction per frame per fencer, plus feet, hips,
+          shoulders, sword hand and arm extension.</p>
+      </div>
+      <div>
+        <dt>LABEL</dt>
+        <h4>Forward, backward, still</h4>
+        <p>Movement along the piste, measured after the camera's own motion has
+          been subtracted out.</p>
+      </div>
+      <div>
+        <dt>WARN</dt>
+        <h4>An honest failure</h4>
+        <p>The frame where it lost a fencer, and why, rather than a confident
+          number you cannot trust.</p>
+      </div>
+    </dl>
   </div>
 </section>
 
-<section id="results">
+<section id="honest">
   <div class="wrap">
-    <h2>What the measurements showed</h2>
-    <p>I built a benchmark from five segments across four competitions, chosen to
-       be difficult: fencers between 100 and 450 pixels tall, one clip at 960x544,
-       heavy motion blur, hand held panning, and a back wall covered in large
-       photographs of other fencers.</p>
+    <h2 class="rise">A tracker that lies is worse than one that stops</h2>
+    <p class="section__intro prose rise">The hard part was never following a
+      fencer. It was knowing when the tracker had stopped following the right one.
+      <strong>My first version kept only 5 of 10 fencer tracks on the correct
+      person, and not one of them reported a problem.</strong></p>
 
-    <p>My first version kept only 5 of 10 fencer tracks on the right person. Every
-       single failure landed on the same kind of thing, and none of them reported
-       a problem.</p>
-
-    <table>
-      <tr><th>Case</th><th>What the box ended up on</th></tr>
-      <tr><td>portland-fleche A</td><td class="bad">a referee standing still</td></tr>
-      <tr><td>seattle-lowres B</td><td class="bad">a spectator's dark hair</td></tr>
-      <tr><td>sf-blur-posters A</td><td class="bad">the ceiling edge</td></tr>
-      <tr><td>sf-blur-posters B</td><td class="bad">the scoreboard</td></tr>
-      <tr><td>cincy-pan-blur A</td><td class="bad">a sponsor banner</td></tr>
-    </table>
-
-    <p>Banners, scoreboards and ceiling edges are static and high contrast, and a
-       template tracker prefers them to a blurred fencer mid lunge. All five
-       reported success the entire time, which is worse than failing.</p>
-
-    <h3>Things I tried that did not work</h3>
-    <p>I am listing these because they are the reason there is one automatic check
-       in the code instead of five.</p>
-    <table>
-      <tr><th>Idea</th><th>Why it failed</th></tr>
-      <tr><td>Cap how far a box may jump per frame</td>
-          <td>A correct box during a lunge jumped 0.284 times its own height. The
-              drifting box jumped 0.356. The other drift jumped 0.194, less than
-              the correct lunge.</td></tr>
-      <tr><td>Compare tracker motion against optical flow</td>
-          <td>Correct tracking during a blurry lunge disagreed by 116px. A real
-              drift disagreed by 157px.</td></tr>
-      <tr><td>Make the tracker give up sooner</td>
-          <td>At one threshold nothing changed. At the next it declared failure at
-              frame 30, in the middle of a good lunge.</td></tr>
-      <tr><td>Use pose confidence as a warning</td>
-          <td>It stayed above 0.97 the whole time a box tracked the wrong people,
-              because those people are real bodies.</td></tr>
-    </table>
-    <p>None of them separated a real drift from a real lunge. Tuning was not the
-       answer.</p>
+    <div class="lost-panel">
+      <figure class="rise">
+        <div class="shot">
+          <img src="lost.jpg" width="1600" height="900" loading="lazy"
+               alt="The same bout during a crossing. Fencer B is still outlined in blue while the top left corner reads Fencer A colon LOST in red, with a red border around the whole frame.">
+        </div>
+        <figcaption>Frame 150 of the fleche clip. The two fencers have run past each
+          other, and Riposte will not guess which is which, so it says
+          <span class="key-lost">LOST</span> and marks the frame.</figcaption>
+      </figure>
+      <div class="callout rise">
+        <h3>Why this matters more than accuracy</h3>
+        <p>A box that has slid onto a referee still reports success. It produces
+          speeds, distances and a tidy spreadsheet, and every number in it is about
+          the wrong person.</p>
+        <p>You cannot spot that by reading the output. So the program refuses to
+          give a position it cannot stand behind, and those rows in the spreadsheet
+          are left blank rather than filled with the last thing it saw.</p>
+      </div>
+    </div>
   </div>
 </section>
 
-<section>
+<section id="how">
   <div class="wrap">
-    <h2>What actually fixed it</h2>
-    <div class="grid">
-      <div class="card">
+    <h2 class="rise">What actually fixed it</h2>
+    <p class="section__intro prose rise">Four different ways of catching a drift
+      after the fact all failed. What worked was removing the failure instead of
+      trying to spot it.</p>
+
+    <div class="pipeline rise">
+      <div class="lead">
         <h4>Only track people</h4>
-        <p>A person detector runs every frame. A fencer's box has to contain a
-           detected body, or that fencer is declared lost. A box cannot drift onto
-           a banner because a banner is not a person.</p>
+        <p>A person detector runs on every frame. A fencer's box has to contain a
+          detected body, or that fencer is declared lost. A box cannot drift onto a
+          sponsor banner, because a banner is not a person.</p>
       </div>
-      <div class="card">
-        <h4>Detections are candidates, not answers</h4>
-        <p>The detector does report the printed fencers on the venue's wall
-           posters as people, on 15% of frames. They never get tracked, because a
-           detection also has to overlap the fencer's box, continue their motion,
-           and not already be claimed.</p>
+      <div>
+        <h4>Detections are candidates</h4>
+        <p>The detector does report the printed fencers on the venue's wall posters
+          as people, on 15% of frames. They never get tracked, because a detection
+          also has to overlap the fencer's box, continue their motion, and not
+          already be claimed by the other fencer.</p>
       </div>
-      <div class="card">
+      <div>
         <h4>Momentum through crossings</h4>
         <p>Two fencers in identical kit passing each other look the same. They are
-           carrying momentum in opposite directions though, so the body still
-           travelling right is still Fencer A.</p>
+          carrying momentum in opposite directions though, so the body still
+          travelling right is still Fencer A.</p>
       </div>
-      <div class="card">
+      <div>
         <h4>One body, one fencer</h4>
-        <p>A detected person can be claimed by at most one fencer, so both boxes
-           can never collapse onto the same body.</p>
+        <p>A detected person can be claimed by at most one fencer, so both boxes can
+          never collapse onto the same body.</p>
       </div>
-      <div class="card">
+      <div>
         <h4>Camera movement removed</h4>
-        <p>Slide, rotation and zoom are measured and subtracted before any fencer
-           movement is calculated. One test clip drifted 9.2% in zoom alone.</p>
+        <p>Slide, rotation and zoom are all measured and subtracted before any
+          fencer movement is calculated. One test clip drifted 9.2% in zoom alone,
+          and a correction that only handled sliding would have counted that as the
+          fencers moving.</p>
       </div>
     </div>
 
-    <h3>Measured on the crossing clip</h3>
-    <table>
-      <tr><th></th><th>Before</th><th>After</th></tr>
-      <tr><td>Peak overlap between the two boxes</td>
-          <td class="bad">collapsed onto one person</td>
-          <td class="ok">0.24, never merged</td></tr>
-      <tr><td>Fencer A at the end</td>
-          <td class="bad">silently tracking a referee</td>
-          <td class="ok">declared lost</td></tr>
-      <tr><td>Identity through the pass</td>
-          <td class="bad">close to a coin flip</td>
-          <td class="ok">both boxes on the correct fencers</td></tr>
-    </table>
-    <p>Four of the five original failures are now flagged instead of silent.</p>
+    <div class="tablewrap rise stagger">
+      <table>
+        <caption>Measured on the crossing clip, before and after.</caption>
+        <thead><tr><th scope="col">On the fleche</th><th scope="col">Before</th><th scope="col">After</th></tr></thead>
+        <tbody>
+          <tr><td>Peak overlap between the two boxes</td>
+              <td class="bad">collapsed onto one person</td>
+              <td class="ok">0.24, never merged</td></tr>
+          <tr><td>Fencer A at the end</td>
+              <td class="bad">silently tracking a referee</td>
+              <td class="ok">declared lost</td></tr>
+          <tr><td>Identity through the pass</td>
+              <td class="bad">close to a coin flip</td>
+              <td class="ok">both boxes on the correct fencers</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </section>
 
-<section>
+<section id="evidence">
   <div class="wrap">
-    <h2>Filming matters more than the code</h2>
-    <p>I measured the filming conditions of every test clip frame by frame and
-       lined them up against what happened. One clip tracked both fencers cleanly,
-       and it is also the only one filmed with a pan under 10 px/s and no zoom.</p>
-    <table>
-      <tr><th>Clip</th><th>Pan speed</th><th>Zoom drift</th><th>Result</th></tr>
-      <tr><td>Portland, steady</td><td>5.5 px/s</td><td>0.1%</td>
-          <td class="ok">both tracked</td></tr>
-      <tr><td>Portland, fleche</td><td>40.6 px/s</td><td>12.2%</td>
-          <td class="bad">A lost late</td></tr>
-      <tr><td>Seattle D2</td><td>41.6 px/s</td><td>0.1%</td>
-          <td class="bad">B drifted onto a spectator</td></tr>
-      <tr><td>SF AFM</td><td>93.6 px/s</td><td>7.5%</td>
-          <td class="bad">both failed</td></tr>
-    </table>
-    <p>One surprise: resolution is not the bottleneck. The Seattle clip is only
-       960x544 and the detector still found the fencers on 100% of frames, the
-       best score of any clip. The full guide is in
-       <a href="https://github.com/matthewyongenwang-coder/riposte/blob/main/FILMING.md">FILMING.md</a>.</p>
+    <h2 class="rise">The measurements, including the bad ones</h2>
+    <p class="section__intro prose rise">The benchmark is five segments from four
+      competitions, chosen to be difficult: fencers between 100 and 450 pixels
+      tall, one clip at 960x544, heavy motion blur, hand held panning, and a back
+      wall covered in large photographs of other fencers.</p>
+
+    <div class="tablewrap rise stagger">
+      <table>
+        <caption>Where the first version's boxes ended up. Every one of them reported success the whole time.</caption>
+        <thead><tr><th scope="col">Case</th><th scope="col">What the box ended up on</th></tr></thead>
+        <tbody>
+          <tr><td class="who">portland-fleche A</td><td class="bad">a referee standing still</td></tr>
+          <tr><td class="who">seattle-lowres B</td><td class="bad">a spectator's dark hair</td></tr>
+          <tr><td class="who">sf-blur-posters A</td><td class="bad">the ceiling edge</td></tr>
+          <tr><td class="who">sf-blur-posters B</td><td class="bad">the scoreboard</td></tr>
+          <tr><td class="who">cincy-pan-blur A</td><td class="bad">a sponsor banner</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <details>
+      <summary>Four ideas that did not work, and the numbers that killed them</summary>
+      <div class="details__body">
+        <p>These are here because they are the reason there is one automatic check
+          in the code instead of five.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th scope="col">Idea</th><th scope="col">Why it failed</th></tr></thead>
+            <tbody>
+              <tr><td>Cap how far a box may jump per frame</td>
+                  <td>A correct box during a lunge jumped 0.284 times its own
+                    height. The drifting box jumped 0.356. Another drift jumped
+                    0.194, less than the correct lunge.</td></tr>
+              <tr><td>Compare tracker motion against optical flow</td>
+                  <td>Correct tracking during a blurry lunge disagreed by 116px. A
+                    real drift disagreed by 157px. The two overlap.</td></tr>
+              <tr><td>Make the tracker give up sooner</td>
+                  <td>At one threshold nothing changed at all. At the next it
+                    declared failure at frame 30, in the middle of a good
+                    lunge.</td></tr>
+              <tr><td>Use pose confidence as a warning</td>
+                  <td>It stayed above 0.97 the whole time a box was tracking the
+                    wrong people, because those people are real bodies.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:1.1rem">None of them separated a real drift from a real
+          lunge. Tuning was not the answer.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>There was a browser version. I removed it.</summary>
+      <div class="details__body">
+        <p>It ran the tracking in JavaScript so it needed no install at all. To do
+          that it had to drop the CSRT tracker, which has no browser equivalent,
+          and cut the camera correction down to sliding only, because doing it
+          properly means shipping 8MB of OpenCV.js.</p>
+        <p>Neither cut is small. On the panning Portland clip the camera rotates
+          1.01 degrees and zooms 1.0924x, and a sliding-only correction ignores
+          both. So the browser version was quietly less accurate than the Python
+          one on exactly the footage that is hardest, and nothing in the repo could
+          have told me by how much, because the two versions shared no tests.</p>
+        <p>Two implementations of one algorithm in two languages drift apart, and
+          the copy is the one that loses. There is now a recorded trace for every
+          benchmark case and one command that says whether behaviour moved, which
+          is what I should have built before writing a second version.</p>
+        <p>One measurement from it is worth keeping. I first shipped it with a
+          smaller detector because it loads in half a second instead of downloading
+          36MB. Over 221 frames of the fleche clip that was a bad trade.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th scope="col">Detector</th><th scope="col">People found per frame</th><th scope="col">Frames a fencer was lost</th></tr></thead>
+            <tbody>
+              <tr><td>Small, EfficientDet-Lite0</td><td class="num">6.0</td><td class="num bad">94</td></tr>
+              <tr><td>YOLOX, same as Python</td><td class="num">12.9</td><td class="num ok">6</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:1.1rem">The small one was finding half as many people,
+          so it was simply missing fencers. Detector size is not somewhere to save
+          load time.</p>
+      </div>
+    </details>
   </div>
 </section>
 
-<section>
+<section id="filming">
   <div class="wrap">
-    <h2>Run it yourself</h2>
+    <h2 class="rise">Filming matters more than the code</h2>
+    <p class="section__intro prose rise">I measured the filming conditions of every
+      test clip frame by frame and lined them up against what happened. One clip
+      tracked both fencers cleanly, and it is also the only one filmed with a pan
+      under 10 px/s and no zoom.</p>
+
+    <div class="tablewrap rise stagger">
+      <table>
+        <thead><tr><th scope="col">Clip</th><th scope="col">Pan speed</th><th scope="col">Zoom drift</th><th scope="col">Result</th></tr></thead>
+        <tbody>
+          <tr><td>Portland, steady</td><td class="num">5.5 px/s</td><td class="num">0.1%</td><td class="ok">both tracked</td></tr>
+          <tr><td>Portland, fleche</td><td class="num">40.6 px/s</td><td class="num">12.2%</td><td class="bad">A lost late</td></tr>
+          <tr><td>Seattle D2</td><td class="num">41.6 px/s</td><td class="num">0.1%</td><td class="bad">B drifted onto a spectator</td></tr>
+          <tr><td>SF AFM</td><td class="num">93.6 px/s</td><td class="num">7.5%</td><td class="bad">both failed</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="section__intro prose rise">One surprise: resolution is not the
+      bottleneck. The Seattle clip is only 960x544 and the detector still found the
+      fencers on 100% of frames, the best score of any clip. Put the phone on
+      something solid and stop zooming, and you will get more out of this than any
+      change to the code will give you. The full guide is in
+      <a href="https://github.com/matthewyongenwang-coder/riposte/blob/main/FILMING.md">FILMING.md</a>.</p>
+  </div>
+</section>
+
+<section id="run">
+  <div class="wrap">
+    <h2 class="rise">Using it on your own bouts</h2>
+    <p class="section__intro prose rise">It runs on your own computer. Nothing is
+      uploaded, there are no accounts, and your footage never leaves the machine.
+      Two pip packages, and the pretrained models are fetched once at setup.</p>
+
+    <ol class="steps rise">
+      <li>
+        <h4>Install it once</h4>
+        <p>Clone the repository and run the setup below. A few minutes, most of
+          which is downloading the models.</p>
+      </li>
+      <li>
+        <h4>Open the local page</h4>
+        <p>Run <code>python3 webapp.py</code> and open the address it prints. Paste
+          the path to a clip so nothing gets copied, even for a 300MB file.</p>
+      </li>
+      <li>
+        <h4>Scrub to the phrase, box each fencer</h4>
+        <p>Drag a box around the <b>mask and torso only</b>, not the legs. On a real
+          clip a full body box slid onto the referee after 49 frames, while a torso
+          box followed the fencer correctly the whole way.</p>
+      </li>
+      <li>
+        <h4>Run it, then read the losses</h4>
+        <p>You get the annotated clip and the spreadsheet. Check the frames it
+          reported as lost, and re-select that fencer there if you want to carry
+          on.</p>
+      </li>
+    </ol>
+
     <pre><code>git clone https://github.com/matthewyongenwang-coder/riposte.git
 cd riposte
 python3 -m venv venv &amp;&amp; source venv/bin/activate
 pip install -r requirements.txt
 python3 get_models.py</code></pre>
-    <p>Then either open the local web page, where you drop in a clip, scrub to the
-       action and drag a box around each fencer:</p>
-    <pre><code>python3 webapp.py</code></pre>
-    <p>Or run it from the terminal:</p>
-    <pre><code>python3 main.py "bout.MOV" --detect --pose</code></pre>
-    <p>Two pip packages. The pretrained models are fetched at setup and none of
-       them were trained by this project. It runs entirely on your own computer,
-       with no accounts and nothing uploaded anywhere.</p>
 
-    <h3>There was a browser version. I removed it.</h3>
-    <p>It ran the tracking in JavaScript so you could use it with no install at
-       all. To do that it had to drop the CSRT tracker, which has no browser
-       equivalent, and cut the camera correction down to sliding only, because
-       doing it properly means shipping 8MB of OpenCV.js.</p>
-    <p>Neither cut is small. On the panning Portland clip the camera rotates
-       1.01 degrees and zooms 1.0924x, and a sliding-only correction ignores
-       both of those. So the browser version was quietly less accurate than the
-       Python one on exactly the footage that is hardest, and nothing in the
-       repo could have told me by how much, because the two versions shared no
-       tests.</p>
-    <p>Two implementations of one algorithm in two languages drift apart, and
-       the copy is the one that loses. I would rather have one engine I can
-       measure than two I have to trust. There is now a golden trace per
-       benchmark case and a single command that says whether behaviour moved,
-       which is what I should have built before writing a second version.</p>
-    <p>One measurement from it is worth keeping. I first shipped it with a
-       smaller detector because it loads in half a second instead of
-       downloading 36MB. Over 221 frames of the fleche clip that was a bad
-       trade:</p>
-    <table>
-      <tr><th>Detector</th><th>People found per frame</th><th>Frames a fencer was lost</th></tr>
-      <tr><td>Small (EfficientDet-Lite0)</td><td>6.0</td><td class="bad">94</td></tr>
-      <tr><td>YOLOX, same as Python</td><td>12.9</td><td class="ok">6</td></tr>
-    </table>
-    <p>The small one was finding half as many people, so it was simply missing
-       fencers. Detector size is not somewhere to save load time.</p>
+    <p style="margin-top:1.2rem">Then the local page:</p>
+    <pre><code>python3 webapp.py</code></pre>
+
+    <p style="margin-top:1.2rem">Or straight from the terminal:</p>
+    <pre><code>python3 main.py "bout.MOV" --detect --pose</code></pre>
   </div>
 </section>
 
-<section>
+<section id="limits">
   <div class="wrap">
-    <h2>What it still cannot do</h2>
-    <ul>
-      <li>A crossing is still the hardest moment and worth checking by eye.</li>
-      <li>A box can drift onto a different person standing where the fencer was
-          predicted. A spectator is a real person, so nothing objects.</li>
-      <li>Nothing here tells my fencers apart from every other fencer in the hall.</li>
-      <li>Blade actions are not recoverable at 30fps. The blade is 2 to 3 pixels
-          wide when still and gone entirely during a lunge. That is the footage,
-          not the algorithm, and slow motion is the fix.</li>
-      <li>Five clips is not a large sample.</li>
+    <h2 class="rise">What it cannot do</h2>
+    <p class="section__intro prose rise">Listed because you should know it before
+      you rely on any number it gives you.</p>
+    <ul class="limits rise">
+      <li><b>Blade actions</b>The blade is 2 to 3 pixels wide when still and gone
+        entirely during a lunge. That is the footage, not the algorithm, and
+        filming in slow motion is the fix.</li>
+      <li><b>Right of way</b>It measures where bodies are and how they move. It does
+        not know who attacked, and it cannot tell you who a touch should go to.</li>
+      <li><b>Telling your fencer apart from any other</b>Nothing here recognises a
+        person. You pick the two fencers by hand on the first frame, every time.</li>
+      <li><b>Crossings</b>Still the hardest moment, and worth checking by eye. A box
+        can also settle on a different person standing where the fencer was
+        predicted to be, because a spectator is a real person and nothing
+        objects.</li>
+      <li><b>Sample size</b>Five clips from four competitions is not a large sample,
+        and every percentage on this page should be read with that in mind.</li>
     </ul>
   </div>
 </section>
 
+<section id="next">
+  <div class="wrap">
+    <h2 class="rise">What is coming</h2>
+    <p class="section__intro prose rise">Riposte is the first piece of a bout
+      analyzer. <strong>Nothing below this line is built yet.</strong> It is listed
+      so you know what the tracking is for, not as a promise.</p>
+
+    <div class="roadmap rise">
+      <div>
+        <span class="tag tag--now">Working</span>
+        <h4>The tracker</h4>
+        <p>Everything on this page, from the terminal or the local page. Tested
+          on macOS. It is plain Python and OpenCV, so Windows and Linux should
+          work, but I have not checked them.</p>
+      </div>
+      <div>
+        <span class="tag">Next</span>
+        <h4>A real app</h4>
+        <p>A version you double-click, with nothing to install and no terminal. The
+          same engine underneath, so the numbers stay the same.</p>
+      </div>
+      <div>
+        <span class="tag">Planned</span>
+        <h4>A record of your bouts</h4>
+        <p>Every bout kept, per opponent, so distance and tempo can be compared
+          across a season instead of one clip at a time.</p>
+      </div>
+      <div>
+        <span class="tag">Planned</span>
+        <h4>Distance and tempo you can read</h4>
+        <p>Real units instead of pixels, from a four tap calibration against the
+          14 metre piste, with the measurement error published next to it.</p>
+      </div>
+      <div>
+        <span class="tag">Researching</span>
+        <h4>A physical trainer</h4>
+        <p>A moving target that sets distance and tempo, driven by what the
+          analysis found in your own bouts.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
 <footer>
   <div class="wrap">
-    <p>MIT licensed. Source, benchmark and filming guide on
-       <a href="https://github.com/matthewyongenwang-coder/riposte">GitHub</a>.
-       Built by Matthew Wang.</p>
+    <p>MIT licensed. Built by Matthew Wang, a sabre fencer who films his own bouts.
+      The source, the benchmark and the filming guide are all on
+      <a href="https://github.com/matthewyongenwang-coder/riposte">GitHub</a>.</p>
+    <p style="margin-top:.8rem">None of the pretrained models were trained by this
+      project. Every number on this page was measured on real competition footage
+      and is reproducible from the repository.</p>
   </div>
 </footer>
+
+<script>
+// Sticky bar appears once the hero has scrolled away.
+const bar = document.getElementById('bar');
+const hero = document.querySelector('.hero');
+if (bar && hero && 'IntersectionObserver' in window) {
+  new IntersectionObserver(
+    ([e]) => { bar.dataset.shown = String(!e.isIntersecting); },
+    { rootMargin: '-72px 0px 0px 0px' }
+  ).observe(hero);
+}
+
+// Reveals. Guarded so reduced-motion users, and any browser without
+// IntersectionObserver, simply get the finished page.
+const motionOK = window.matchMedia('(prefers-reduced-motion: no-preference)').matches;
+const revealable = document.querySelectorAll('.rise, .stagger');
+if (motionOK && 'IntersectionObserver' in window) {
+  const io = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      e.target.classList.add('seen');
+      io.unobserve(e.target);
+    }
+  }, { rootMargin: '0px 0px -12% 0px', threshold: 0.08 });
+  revealable.forEach((el) => io.observe(el));
+} else {
+  revealable.forEach((el) => el.classList.add('seen'));
+}
+
+// If the observer never fires, for any reason at all, show everything.
+setTimeout(() => {
+  document.querySelectorAll('.rise, .stagger').forEach((el) => el.classList.add('seen'));
+}, 3000);
+</script>
 
 </body>
 </html>
