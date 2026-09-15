@@ -435,6 +435,53 @@ alarm.
 
 ---
 
+## The Mac app
+
+A real app you double-click, with no terminal and no browser. It runs the
+same `main.py` underneath, through `engine.py`, so a result in the app is a
+result you can reproduce from the command line.
+
+Build it once:
+
+```bash
+scripts/build_mac_app.sh
+```
+
+That freezes the engine with PyInstaller, puts it and the models inside the
+app, and leaves `dist/Riposte.app`, which you can drag into Applications.
+You need Flutter and Xcode to build it, but nothing at all to run it.
+
+Open a clip, scrub to the phrase with the arrow keys, drag a box round each
+fencer's mask and torso, and press Track this phrase. You get the annotated
+clip playing in the window, how much of each fencer it kept, and every
+frame where it lost one. The files land in `~/Movies/Riposte`, one folder
+per run.
+
+The app does not decode video itself. The engine hands it every frame, so
+the frame you draw on is the frame the tracker starts from. I checked this
+on all five benchmark clips, including starts at frames 210, 545 and 1950,
+and the preview frame is byte for byte the tracker's first frame. That
+matters because a one-frame offset is enough to swap which fencer is which
+on the fleche clip.
+
+Three things are checked, not assumed:
+
+| Check | Result |
+|---|---|
+| Boxes drawn in the app versus boxes the tracker received | identical, 0 px |
+| Frozen engine versus the Python engine, same 40 frames | byte-identical CSV |
+| Engine protocol, including cancelling a run and exiting with the app | 15 of 15 |
+
+The integration test drives the whole flow with a real clip:
+
+```bash
+cd app && flutter test integration_test/app_test.dart -d macos \
+  --dart-define=RIPOSTE_TEST_CLIP="/path/to/clip.MOV"
+```
+
+It is signed ad hoc, which is enough to run on the Mac that built it. Giving
+it to anyone else needs a paid Apple Developer ID and notarisation.
+
 ## The web page
 
 ```bash

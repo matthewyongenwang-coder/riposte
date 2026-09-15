@@ -17,3 +17,8 @@ _probe/
 _selftest_frame.png
 _*/
 .vercel
+
+# Mac app build output. scripts/build_mac_app.sh recreates all of it.
+build_engine/
+build_engine.log
+dist/
